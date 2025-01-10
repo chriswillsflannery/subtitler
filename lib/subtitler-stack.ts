@@ -25,6 +25,13 @@ export class SubtitlerStack extends cdk.Stack {
       autoDeleteObjects: true,
     });
 
+    // custom ffmpeg layer
+    const ffmpegLayer = new lambda.LayerVersion(this, 'FFmpegLayer', {
+      code: lambda.Code.fromAsset('lambda-layers/ffmpeg'),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_9],
+      description: 'FFmpeg binaries'
+    });
+
     // create lambda function for video processing
     const processingFunction = new lambda.Function(this, 'VideoProcessingFunction', {
       runtime: lambda.Runtime.PYTHON_3_9,
@@ -40,9 +47,7 @@ export class SubtitlerStack extends cdk.Stack {
       }),
       timeout: cdk.Duration.minutes(15),
       memorySize: 1024,
-      layers: [lambda.LayerVersion.fromLayerVersionArn(this, 'FFmpegLayer',
-        'arn:aws:lambda:us-east-1:363707095409:layer:ffmpeg:7'
-      )],
+      layers: [ffmpegLayer],
       environment: {
         PROCESSED_BUCKET_NAME: processedBucket.bucketName
       }
