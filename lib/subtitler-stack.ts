@@ -3,9 +3,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3notifications from 'aws-cdk-lib/aws-s3-notifications';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import { Construct } from 'constructs';
 
 export class SubtitlerStack extends cdk.Stack {
-  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     const uploadBucket = new s3.Bucket(this, 'VideoUploadBucket', {
@@ -21,7 +22,7 @@ export class SubtitlerStack extends cdk.Stack {
     const processedBucket = new s3.Bucket(this, 'ProcessedVideosBucket', {
       versioned: true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true
+      autoDeleteObjects: true,
     });
 
     // create lambda function for video processing
@@ -35,7 +36,7 @@ export class SubtitlerStack extends cdk.Stack {
             'bash', '-c',
             'pip install -r requirements.txt -t /asset-output && cp -au . /asset-output'
           ],
-        }
+        },
       }),
       timeout: cdk.Duration.minutes(15),
       memorySize: 1024,
