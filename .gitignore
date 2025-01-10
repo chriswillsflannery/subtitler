@@ -6,3 +6,41 @@ node_modules
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+
+# CDK & TypeScript
+*.js
+!jest.config.js
+*.d.ts
+node_modules
+cdk.out/
+.cdk.staging/
+cdk.context.json
+
+# Python
+*.pyc
+__pycache__/
+.pytest_cache/
+*.pyo
+*.pyd
+.Python
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Lambda deployment packages
+lambda-layers/*/
+!lambda-layers/*/requirements.txt
+
+# OS
+.DS_Store
+.env
+*.log
