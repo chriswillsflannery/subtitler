@@ -4,6 +4,7 @@ import json
 import subprocess
 import uuid
 import time
+import requests
 
 s3_client = boto3.client('s3')
 transcribe_client = boto3.client('transcribe')
