@@ -4,7 +4,6 @@ import json
 import subprocess
 import uuid
 import time
-import requests
 
 s3_client = boto3.client('s3')
 transcribe_client = boto3.client('transcribe')
@@ -31,6 +30,7 @@ def handler(event, context):
     audio_path = f"/tmp/{uuid.uuid4()}.wav"
     subtitle_path = f"/tmp/{uuid.uuid4()}.srt"
     output_path = f"/tmp/{uuid.uuid4()}.mp4"
+    transcript_path = f"/tmp/{uuid.uuid4()}.json"
     
     try:
         # download video file
@@ -108,29 +108,28 @@ def handler(event, context):
                 raise Exception(f"Transcription failed: {status['TranscriptionJob'].get('FailureReason', 'Unknown reason')}")
             
             time.sleep(10)  # Wait 10 seconds before checking again
-            
-        # download and process transcript
-        transcript_uri = status['TranscriptionJob']['Transcript']['TranscriptFileUri']
-        print(f"Downloading transcript from: {transcript_uri}")
         
-        # create SRT file from transcript
-        response = requests.get(transcript_uri)
-        response.raise_for_status() # raise exception for bad status codes
+        # get transcript using s3 client
+        transcript_key = f"{job_name}.json"
+        print(f"Downloading transcript from processed bucket, key: {transcript_key}")
 
         try:
-            transcript_data = response.json()
-            print("successfully parsed transcript json")
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse json. Response content: {response.text[:1000]}")
-            raise
-        
-        with open(subtitle_path, 'w', encoding='utf-8') as srt_file:
-            items = transcript_data['results']['items']
-            current_subtitle = []
-            subtitle_count = 1
-            
-            for item in items:
-                if item.get('type') == 'pronunciation':
+            s3_client.download_file(
+                os.environ["PROCESSED_BUCKET_NAME"],
+                transcript_key,
+                transcript_path
+            )
+            # create SRT file from transcript
+            with open(transcript_path, 'r') as f:
+                transcript_data = json.load(f)
+                
+            with open(subtitle_path, 'w', encoding = 'utf-8') as srt_file:
+                items = transcript_data['results']['items']
+                current_subtitle = []
+                subtitle_count = 1
+
+                for item in items:
+                  if item.get('type') == 'pronunciation':
                     if not current_subtitle:
                         start_time = float(item['start_time'])
                         current_subtitle = [item]
@@ -148,38 +147,54 @@ def handler(event, context):
                         current_subtitle = [item]
                     else:
                         current_subtitle.append(item)
-        
-        # Add subtitles to video using ffmpeg
-        print("Adding subtitles to video")
-        result = subprocess.run([
-            '/opt/ffmpeg/ffmpeg',
-            '-y',
-            '-i', video_path,
-            '-vf', f'subtitles={subtitle_path}',
-            '-c:a', 'copy',
-            output_path
-        ], capture_output=True, text=True)
-        
-        print(f"FFmpeg stdout: {result.stdout}")
-        print(f"FFmpeg stderr: {result.stderr}")
-        result.check_returncode()
-        
-        # upload processed video
-        output_key = f'processed/{os.path.basename(key)}'
-        print(f"Uploading processed video to: {output_key}")
-        s3_client.upload_file(
-            output_path,
-            os.environ['PROCESSED_BUCKET_NAME'],
-            output_key
-        )
-        
-        return {
-            'statusCode': 200,
-            'body': json.dumps({
-                'message': 'Video processing completed',
-                'processedVideo': output_key
-            })
-        }
+                
+                # Write last subtitle if exists
+                if current_subtitle:
+                    end_time = float(current_subtitle[-1]['end_time'])
+                    words = ' '.join(i['alternatives'][0]['content'] for i in current_subtitle)
+                    
+                    srt_file.write(f"{subtitle_count}\n")
+                    srt_file.write(f"{format_timestamp(start_time)} --> {format_timestamp(end_time)}\n")
+                    srt_file.write(f"{words}\n")
+
+            # Add subtitles to video using ffmpeg
+            print("Adding subtitles to video")
+            result = subprocess.run([
+                'ffmpeg',
+                '-y',
+                '-i', video_path,
+                '-vf', f'subtitles={subtitle_path}',
+                '-c:a', 'copy',
+                output_path
+            ], capture_output=True, text=True)
+            
+            print(f"FFmpeg stdout: {result.stdout}")
+            print(f"FFmpeg stderr: {result.stderr}")
+            result.check_returncode()
+            
+            # Upload processed video
+            output_key = f'processed/{os.path.basename(key)}'
+            print(f"Uploading processed video to: {output_key}")
+            s3_client.upload_file(
+                output_path,
+                os.environ['PROCESSED_BUCKET_NAME'],
+                output_key
+            )
+            
+            print("Processing complete")
+            return {
+                'statusCode': 200,
+                'body': json.dumps({
+                    'message': 'Processing complete',
+                    'processedVideo': output_key
+                })
+            }
+        except Exception as e:
+            print(f"Error downloading or parsing transcript: {str(e)}")
+            raise
+        finally:
+            if os.path.exists(transcript_path):
+                os.remove(transcript_path)
         
     except Exception as e:
         print(f"Error processing video: {str(e)}")
