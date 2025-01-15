@@ -54,8 +54,8 @@ export class SubtitlerStack extends cdk.Stack {
     });
 
     // give lambda read/write permissions
-    uploadBucket.grantRead(processingFunction);
-    processedBucket.grantWrite(processingFunction);
+    uploadBucket.grantReadWrite(processingFunction);
+    processedBucket.grantReadWrite(processingFunction);
 
     // give transcribe permissions to lambda role
     processingFunction.addToRolePolicy(new iam.PolicyStatement({
