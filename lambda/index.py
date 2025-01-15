@@ -2,129 +2,173 @@ import boto3
 import os
 import json
 import subprocess
-import tempfile
 import uuid
+import time
 
 s3_client = boto3.client('s3')
 transcribe_client = boto3.client('transcribe')
 
 def handler(event, context):
-  # get bucket and key from event
-  bucket = event['Records'][0]['s3']['bucket']['name']
-  key = event['Records'][0]['s3']['object']['key']
-
-  # download video file
-  with tempfile.NamedTemporaryFile(suffix='.mp4') as video_file:
-    print(f"Downloading  {key} from {bucket}")
-    s3_client.download_file(bucket, key, video_file.name)
-
-    #extract audio with ffmpeg
-    audio_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+    # get bucket and key from event
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = event['Records'][0]['s3']['object']['key']
+    
+    print(f"Processing video: {key} from bucket: {bucket}")
+    
+    # create temporary files with unique names
+    video_path = f"/tmp/{uuid.uuid4()}.mp4"
+    audio_path = f"/tmp/{uuid.uuid4()}.wav"
+    subtitle_path = f"/tmp/{uuid.uuid4()}.srt"
+    output_path = f"/tmp/{uuid.uuid4()}.mp4"
+    
     try:
-      print(f"Extracting audio to {audio_file.name}")
-      subprocess.run([
-        'ffmpeg', '-i', video_file.name,
-        '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-        audio_file.name
-      ], check=True, capture_output=True)
-    except subprocess.CalledProcessError as e:
-      print(f"FFmpeg error: {e.stderr.decode()}")
-      raise
+        # download video file
+        print(f"Downloading video to: {video_path}")
+        s3_client.download_file(bucket, key, video_path)
+        
+        # verify video file size
+        video_size = os.path.getsize(video_path)
+        print(f"Downloaded video size: {video_size} bytes")
+        if video_size == 0:
+            raise ValueError("Downloaded video file is empty")
+        
+        # extract audio using ffmpeg with verbose output
+        print("Extracting audio with FFmpeg")
+        result = subprocess.run([
+            '/opt/ffmpeg/ffmpeg',  # Use full path to ffmpeg
+            '-y',  # force overwrite output file
+            '-i', video_path,
+            '-vn',  # no video
+            '-acodec', 'pcm_s16le',
+            '-ar', '16000',
+            '-ac', '1',
+            audio_path
+        ], capture_output=True, text=True)
+        
+        # print FFmpeg output for debugging
+        print(f"FFmpeg stdout: {result.stdout}")
+        print(f"FFmpeg stderr: {result.stderr}")
+        
+        # check FFmpeg was successful
+        result.check_returncode()
+        
+        # verify audio file created and has content
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError("Audio file was not created")
+        
+        audio_size = os.path.getsize(audio_path)
+        print(f"Generated audio size: {audio_size} bytes")
+        if audio_size == 0:
+            raise ValueError("Generated audio file is empty")
+            
+        # upload audio to S3
+        audio_key = f'audio/{os.path.basename(audio_path)}'
+        print(f"Uploading audio to {bucket}/{audio_key}")
+        s3_client.upload_file(audio_path, bucket, audio_key)
+        
+        # start transcription job
+        job_name = f'transcribe-{context.aws_request_id}'
+        print(f"Starting transcription job {job_name}")
+        transcribe_client.start_transcription_job(
+            TranscriptionJobName=job_name,
+            Media={'MediaFileUri': f's3://{bucket}/{audio_key}'},
+            MediaFormat='wav',
+            LanguageCode='en-US',
+            OutputBucketName=os.environ['PROCESSED_BUCKET_NAME']
+        )
+        
+        # wait for transcription to complete
+        print("Waiting for transcription to complete...")
+        while True:
+            status = transcribe_client.get_transcription_job(TranscriptionJobName=job_name)
+            job_status = status['TranscriptionJob']['TranscriptionJobStatus']
+            print(f"Transcription job status: {job_status}")
+            
+            if job_status in ['COMPLETED', 'FAILED']:
+                break
+            if job_status == 'FAILED':
+                raise Exception(f"Transcription failed: {status['TranscriptionJob'].get('FailureReason', 'Unknown reason')}")
+            time.sleep(5)  # Wait 5 seconds before checking again
+            
+        # download and process transcript
+        transcript_uri = status['TranscriptionJob']['Transcript']['TranscriptFileUri']
+        print(f"Downloading transcript from: {transcript_uri}")
+        
+        # create SRT file from transcript
+        response = requests.get(transcript_uri)
+        transcript_data = response.json()
+        
+        with open(subtitle_path, 'w', encoding='utf-8') as srt_file:
+            items = transcript_data['results']['items']
+            current_subtitle = []
+            subtitle_count = 1
+            
+            for item in items:
+                if item.get('type') == 'pronunciation':
+                    if not current_subtitle:
+                        start_time = float(item['start_time'])
+                        current_subtitle = [item]
+                    elif float(item['start_time']) - float(current_subtitle[-1]['end_time']) > 1.0:
+                        # Write current subtitle
+                        end_time = float(current_subtitle[-1]['end_time'])
+                        words = ' '.join(i['alternatives'][0]['content'] for i in current_subtitle)
+                        
+                        srt_file.write(f"{subtitle_count}\n")
+                        srt_file.write(f"{format_timestamp(start_time)} --> {format_timestamp(end_time)}\n")
+                        srt_file.write(f"{words}\n\n")
+                        
+                        subtitle_count += 1
+                        start_time = float(item['start_time'])
+                        current_subtitle = [item]
+                    else:
+                        current_subtitle.append(item)
+        
+        # Add subtitles to video using ffmpeg
+        print("Adding subtitles to video")
+        result = subprocess.run([
+            '/opt/ffmpeg/ffmpeg',
+            '-y',
+            '-i', video_path,
+            '-vf', f'subtitles={subtitle_path}',
+            '-c:a', 'copy',
+            output_path
+        ], capture_output=True, text=True)
+        
+        print(f"FFmpeg stdout: {result.stdout}")
+        print(f"FFmpeg stderr: {result.stderr}")
+        result.check_returncode()
+        
+        # upload processed video
+        output_key = f'processed/{os.path.basename(key)}'
+        print(f"Uploading processed video to: {output_key}")
+        s3_client.upload_file(
+            output_path,
+            os.environ['PROCESSED_BUCKET_NAME'],
+            output_key
+        )
+        
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'message': 'Video processing completed',
+                'processedVideo': output_key
+            })
+        }
+        
+    except Exception as e:
+        print(f"Error processing video: {str(e)}")
+        raise
+        
+    finally:
+        print("Cleaning up temporary files")
+        for path in [video_path, audio_path, subtitle_path, output_path]:
+            if os.path.exists(path):
+                os.remove(path)
 
-    #upload audio wav to s3 for transcription
-    audio_key = f'audio/{uuid.uuid4()}.wav'
-    print(f"Uploading audio to {audio_key}")
-    s3_client.upload_file(audio_file.name, bucket, audio_key)
-
-    # start transcription job
-    job_name = f'transcribe-{context.aws_request_id}'
-    print(f"Starting transcription job {job_name}")
-    transcribe_client.start_transcription_job(
-      TranscriptionJobName=job_name,
-      Media={'MediaFileUri': f's3://{bucket}/{audio_key}'},
-      MediaFormat='wav',
-      LanguageCode='en-US',
-      OutputBucketName=os.environ['PROCESSED_BUCKET_NAME']
-    )
-
-    #wait for transcription to complete
-    while True:
-      status = transcribe_client.get_transcription_job(TranscriptionJobName=job_name)
-      if status['TranscriptionJob']['TranscriptionJobStatus'] in ['COMPLETED', 'FAILED']:
-        break
-    if status['TranscriptionJob']['TranscriptionJobStatus'] == 'FAILED':
-      raise Exception('Transcription failed')
-    
-    # download transcript
-    transcript_file = tempfile.NamedTemporaryFile(suffix='.json', delete=False)
-    s3_client.download_file(
-      os.environ['PROCESSED_BUCKET_NAME'],
-      f'{job_name}.json',
-      transcript_file.name
-    )
-
-    # convert to SRT format so we can retain timestamps
-    with open(transcript_file.name, 'r') as f:
-      transcript_data = json.load(f)
-    items = transcript_data['results']['items']
-    current_subtitle = []
-    subtitles = []
-
-    for item in items:
-      if 'start_time' in item:
-        if not current_subtitle:
-          current_subtitle = [item]
-        elif float(item['start_time']) - float(current_subtitle[-1]['end_time']) > 1.0:
-          subtitles.append(current_subtitle)
-          current_subtitle = [item]
-        else:
-          current_subtitle.append(item)
-    
-    srt_file = tempfile.NamedTemporaryFile(suffix='.srt', delete=False)
-    with open(srt_file.name, 'w') as f:
-      for i, subtitle in enumerate(subtitles, 1):
-        start_time = subtitle[0]['start_time']
-        end_time = subtitle[-1]['end_time']
-        text = ' '.join(item['alternatives'][0]['content'] for item in subtitle)
-
-        f.write(f'{i}\n')
-        f.write(f'{format_timestamp(float(start_time))} --> {format_timestamp(float(end_time))}\n')
-        f.write(f'{text}\n\n')
-
-    #add subtitles to vieo with ffmpeg
-    output_file = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
-    subprocess.run([
-      'ffmpeg', '-i', video_file.name,
-      '-vf', f'subtitles={srt_file.name}',
-      '-c:a', 'copy',
-      output_file.name
-    ])
-
-    #upload processed video
-    processed_key = f'processed/{os.path.basename(key)}'
-    s3_client.upload_file(
-      output_file.name,
-      os.environ['PROCESSED_BUCKET_NAME'],
-      processed_key
-    )
-
-    #clean up temp files
-    os.unlink(audio_file.name)
-    os.unlink(transcript_file.name)
-    os.unlink(srt_file.name)
-    os.unlink(output_file.name)
-
-    return {
-      'statusCode': 200,
-      'body': json.dumps({
-        'message': 'Video processing completed',
-        'processed video key': processed_key
-      })
-    }
-  
-  def format_timestamp(seconds):
+def format_timestamp(seconds):
+    """Convert seconds to SRT timestamp format"""
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     seconds = int(seconds % 60)
-    millis = int((seconds % 1) * 1000)
-    return f'{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}'
+    milliseconds = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
