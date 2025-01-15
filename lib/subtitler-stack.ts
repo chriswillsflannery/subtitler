@@ -3,6 +3,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3notifications from 'aws-cdk-lib/aws-s3-notifications';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import { Construct } from 'constructs';
 
 export class SubtitlerStack extends cdk.Stack {
@@ -29,7 +30,8 @@ export class SubtitlerStack extends cdk.Stack {
     const ffmpegLayer = new lambda.LayerVersion(this, 'FFmpegLayer', {
       code: lambda.Code.fromAsset('lambda-layers/ffmpeg'),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_9],
-      description: 'FFmpeg binaries'
+      description: 'FFmpeg binaries',
+      layerVersionName: 'ffmpeg-layer'
     });
 
     // create lambda function for video processing
@@ -51,6 +53,13 @@ export class SubtitlerStack extends cdk.Stack {
       environment: {
         PROCESSED_BUCKET_NAME: processedBucket.bucketName
       }
+    });
+
+    // add cloudwatch log retention
+    new logs.LogGroup(this, 'VideoProcessingFunctionLogs', {
+      logGroupName: `/aws/lambda/${this.stackName}-VideoProcessingFunction`,
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // give lambda read/write permissions
