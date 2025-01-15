@@ -3,6 +3,7 @@ import os
 import json
 import subprocess
 import tempfile
+import uuid
 
 s3_client = boto3.client('s3')
 transcribe_client = boto3.client('transcribe')
@@ -14,24 +15,33 @@ def handler(event, context):
 
   # download video file
   with tempfile.NamedTemporaryFile(suffix='.mp4') as video_file:
+    print(f"Downloading  {key} from {bucket}")
     s3_client.download_file(bucket, key, video_file.name)
+
     #extract audio with ffmpeg
     audio_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-    subprocess.run([
-      'ffmpeg', '-i', video_file.name,
-      '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-      audio_file.name
-    ])
+    try:
+      print(f"Extracting audio to {audio_file.name}")
+      subprocess.run([
+        'ffmpeg', '-i', video_file.name,
+        '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+        audio_file.name
+      ], check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+      print(f"FFmpeg error: {e.stderr.decode()}")
+      raise
 
     #upload audio wav to s3 for transcription
-    audio_key = f'audio/{os.path.basename(key)}.wav'
+    audio_key = f'audio/{uuid.uuid4()}.wav'
+    print(f"Uploading audio to {audio_key}")
     s3_client.upload_file(audio_file.name, bucket, audio_key)
 
     # start transcription job
-    job_name = f'transcribe-{key}-{context.aws_request_id}'
+    job_name = f'transcribe-{context.aws_request_id}'
+    print(f"Starting transcription job {job_name}")
     transcribe_client.start_transcription_job(
       TranscriptionJobName=job_name,
-      Media={'MediaFileUri': f's3//{bucket}/{audio_key}'},
+      Media={'MediaFileUri': f's3://{bucket}/{audio_key}'},
       MediaFormat='wav',
       LanguageCode='en-US',
       OutputBucketName=os.environ['PROCESSED_BUCKET_NAME']
