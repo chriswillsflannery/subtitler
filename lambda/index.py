@@ -35,7 +35,7 @@ def handler(event, context):
         # extract audio using ffmpeg with verbose output
         print("Extracting audio with FFmpeg")
         result = subprocess.run([
-            '/opt/ffmpeg/ffmpeg',  # Use full path to ffmpeg
+            'ffmpeg',  # Use ffmpg from PATH
             '-y',  # force overwrite output file
             '-i', video_path,
             '-vn',  # no video
