@@ -12,6 +12,16 @@ def handler(event, context):
     # get bucket and key from event
     bucket = event['Records'][0]['s3']['bucket']['name']
     key = event['Records'][0]['s3']['object']['key']
+
+    # skip if audio file to prevent recursive triggering
+    if key.startswith('audio'):
+        print(f"Skipping audio file: {key}")
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'message':'Skipped audio file processing'
+            })
+        }
     
     print(f"Processing video: {key} from bucket: {bucket}")
     
