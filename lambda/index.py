@@ -73,13 +73,15 @@ def handler(event, context):
             raise ValueError("Generated audio file is empty")
             
         # upload audio to S3
-        audio_key = f'audio/{os.path.basename(audio_path)}'
+        audio_key = f'audio/{uuid.uuid4()}.wav'
         print(f"Uploading audio to {bucket}/{audio_key}")
         s3_client.upload_file(audio_path, bucket, audio_key)
+
+        # generate unique job name
+        job_name = f'transcribe-{int(time.time())}-{uuid.uuid4()}'[:32]
+        print(f"Starting transcription job {job_name}")
         
         # start transcription job
-        job_name = f'transcribe-{context.aws_request_id}'
-        print(f"Starting transcription job {job_name}")
         transcribe_client.start_transcription_job(
             TranscriptionJobName=job_name,
             Media={'MediaFileUri': f's3://{bucket}/{audio_key}'},
@@ -88,18 +90,24 @@ def handler(event, context):
             OutputBucketName=os.environ['PROCESSED_BUCKET_NAME']
         )
         
-        # wait for transcription to complete
+        # wait for transcription to complete  with timeout
         print("Waiting for transcription to complete...")
+        start_time = time.time()
+        timeout = 300
         while True:
+            if time.time() - start_time > timeout:
+                raise TimeoutError("Transcription job timed out")
             status = transcribe_client.get_transcription_job(TranscriptionJobName=job_name)
             job_status = status['TranscriptionJob']['TranscriptionJobStatus']
             print(f"Transcription job status: {job_status}")
             
-            if job_status in ['COMPLETED', 'FAILED']:
+            if job_status == 'COMPLETED':
+                print("Transcription completed successfully")
                 break
-            if job_status == 'FAILED':
+            elif job_status == 'FAILED':
                 raise Exception(f"Transcription failed: {status['TranscriptionJob'].get('FailureReason', 'Unknown reason')}")
-            time.sleep(5)  # Wait 5 seconds before checking again
+            
+            time.sleep(10)  # Wait 10 seconds before checking again
             
         # download and process transcript
         transcript_uri = status['TranscriptionJob']['Transcript']['TranscriptFileUri']
@@ -107,7 +115,14 @@ def handler(event, context):
         
         # create SRT file from transcript
         response = requests.get(transcript_uri)
-        transcript_data = response.json()
+        response.raise_for_status() # raise exception for bad status codes
+
+        try:
+            transcript_data = response.json()
+            print("successfully parsed transcript json")
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse json. Response content: {response.text[:1000]}")
+            raise
         
         with open(subtitle_path, 'w', encoding='utf-8') as srt_file:
             items = transcript_data['results']['items']
