@@ -5,6 +5,7 @@ import subprocess
 import uuid
 import time
 import pathlib
+from urllib.parse import unquote_plus
 
 s3_client = boto3.client('s3')
 transcribe_client = boto3.client('transcribe')
@@ -15,14 +16,18 @@ def handler(event, context):
 
     # get bucket and key from event
     bucket = event['Records'][0]['s3']['bucket']['name']
-    key = event['Records'][0]['s3']['object']['key']
+    raw_key = event['Records'][0]['s3']['object']['key']
+
+    # decode key = handle URL encoding and plus sign
+    key = unquote_plus(raw_key)
 
     print(f"Extracted bucket: {bucket}")
+    print(f"Raw key from event: {raw_key}")
     print(f"Extracted key: {key}")
 
     # list objects in bucket to verify access
     try:
-        response = s3_client.list_object_v2(Bucket=bucket, Prefix=key)
+        response = s3_client.list_objects_v2(Bucket=bucket, Prefix=key)
         print(f"Objects in bucket with prefix {key}:")
         print(json.dumps(response, indent=2))
     except Exception as e:
@@ -42,13 +47,6 @@ def handler(event, context):
 
     original_extension = pathlib.Path(key).suffix
     print(f"Original extension: {original_extension}")
-    
-    # create temporary files with unique names
-    video_path = f"/tmp/{uuid.uuid4()}{original_extension}"
-    audio_path = f"/tmp/{uuid.uuid4()}.wav"
-    subtitle_path = f"/tmp/{uuid.uuid4()}.srt"
-    output_path = f"/tmp/{uuid.uuid4()}.mp4" # final output is always mp4
-    transcript_path = f"/tmp/{uuid.uuid4()}.json"
 
     # check if format is supported
     supported_formats = ['.mp4','.mov','.avi','.mkv']
@@ -60,6 +58,13 @@ def handler(event, context):
                 'message': f'Unsupported file format: {original_extension}'
             })
         }
+    
+    # create temporary files with unique names
+    video_path = f"/tmp/{uuid.uuid4()}{original_extension}"
+    audio_path = f"/tmp/{uuid.uuid4()}.wav"
+    subtitle_path = f"/tmp/{uuid.uuid4()}.srt"
+    output_path = f"/tmp/{uuid.uuid4()}.mp4" # final output is always mp4
+    transcript_path = f"/tmp/{uuid.uuid4()}.json"
     
     print(f"Processing {original_extension} video: {key} from bucket: {bucket}")
     print(f"Input path: {video_path}")
