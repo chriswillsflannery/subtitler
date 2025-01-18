@@ -10,9 +10,23 @@ s3_client = boto3.client('s3')
 transcribe_client = boto3.client('transcribe')
 
 def handler(event, context):
+    print("Lambda function started")
+    print(f"Full event: {json.dumps(event, indent=2)}")
+
     # get bucket and key from event
     bucket = event['Records'][0]['s3']['bucket']['name']
     key = event['Records'][0]['s3']['object']['key']
+
+    print(f"Extracted bucket: {bucket}")
+    print(f"Extracted key: {key}")
+
+    # list objects in bucket to verify access
+    try:
+        response = s3_client.list_object_v2(Bucket=bucket, Prefix=key)
+        print(f"Objects in bucket with prefix {key}:")
+        print(json.dumps(response, indent=2))
+    except Exception as e:
+        print(f"Error listing objects: {str(e)}")
 
     # skip if audio file to prevent recursive triggering
     if key.startswith('audio'):
@@ -27,6 +41,7 @@ def handler(event, context):
     print(f"Processing video: {key} from bucket: {bucket}")
 
     original_extension = pathlib.Path(key).suffix
+    print(f"Original extension: {original_extension}")
     
     # create temporary files with unique names
     video_path = f"/tmp/{uuid.uuid4()}{original_extension}"
@@ -51,6 +66,14 @@ def handler(event, context):
     print(f"Output path: {output_path}")
     
     try:
+        # get object info before downloading
+        try:
+            head_response = s3_client.head_object(Bucket=bucket,Key=key)
+            print(f"Object exists in s3. Metadata: {json.dumps(head_response, indent=2)}")
+        except Exception as e:
+            print(f"Error checking object existence: {str(e)}")
+            raise
+            
         # download video file
         print(f"Downloading video to: {video_path}")
         s3_client.download_file(bucket, key, video_path)
