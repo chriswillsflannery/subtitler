@@ -4,6 +4,7 @@ import json
 import subprocess
 import uuid
 import time
+import pathlib
 
 s3_client = boto3.client('s3')
 transcribe_client = boto3.client('transcribe')
@@ -24,13 +25,30 @@ def handler(event, context):
         }
     
     print(f"Processing video: {key} from bucket: {bucket}")
+
+    original_extension = pathlib.Path(key).suffix
     
     # create temporary files with unique names
-    video_path = f"/tmp/{uuid.uuid4()}.mp4"
+    video_path = f"/tmp/{uuid.uuid4()}{original_extension}"
     audio_path = f"/tmp/{uuid.uuid4()}.wav"
     subtitle_path = f"/tmp/{uuid.uuid4()}.srt"
-    output_path = f"/tmp/{uuid.uuid4()}.mp4"
+    output_path = f"/tmp/{uuid.uuid4()}.mp4" # final output is always mp4
     transcript_path = f"/tmp/{uuid.uuid4()}.json"
+
+    # check if format is supported
+    supported_formats = ['.mp4','.mov','.avi','.mkv']
+    if original_extension.lower() not in supported_formats:
+        print(f"Unsupported file format: {original_extension}")
+        return {
+            'statusCode': 400,
+            'body': json.dumps({
+                'message': f'Unsupported file format: {original_extension}'
+            })
+        }
+    
+    print(f"Processing {original_extension} video: {key} from bucket: {bucket}")
+    print(f"Input path: {video_path}")
+    print(f"Output path: {output_path}")
     
     try:
         # download video file
