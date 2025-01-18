@@ -6,9 +6,15 @@ import uuid
 import time
 import pathlib
 from urllib.parse import unquote_plus
+from datetime import datetime
 
 s3_client = boto3.client('s3')
 transcribe_client = boto3.client('transcribe')
+
+def datetime_handler(obj):
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 def handler(event, context):
     print("Lambda function started")
@@ -23,13 +29,13 @@ def handler(event, context):
 
     print(f"Extracted bucket: {bucket}")
     print(f"Raw key from event: {raw_key}")
-    print(f"Extracted key: {key}")
+    print(f"Decoded key: {key}")
 
     # list objects in bucket to verify access
     try:
         response = s3_client.list_objects_v2(Bucket=bucket, Prefix=key)
         print(f"Objects in bucket with prefix {key}:")
-        print(json.dumps(response, indent=2))
+        print(json.dumps(response, default=datetime_handler, indent=2))
     except Exception as e:
         print(f"Error listing objects: {str(e)}")
 
@@ -74,7 +80,8 @@ def handler(event, context):
         # get object info before downloading
         try:
             head_response = s3_client.head_object(Bucket=bucket,Key=key)
-            print(f"Object exists in s3. Metadata: {json.dumps(head_response, indent=2)}")
+            print(f"Object exists in s3. Metadata:")
+            print(json.dumps(head_response, default=datetime_handler, indent=2))
         except Exception as e:
             print(f"Error checking object existence: {str(e)}")
             raise
